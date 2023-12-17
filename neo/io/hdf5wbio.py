@@ -238,8 +238,11 @@ class Hdf5WbIO(BaseIO):
 
         self.global_block_metadata = {}
         for annotation_name in GLOBAL_ANNOTATIONS:
-            value = getattr(self._file, annotation_name, None)
+            value = self._file[annotation_name] if annotation_name in self._file else None
             if value is not None:
+                if isinstance(value, h5py.Dataset) and value.shape == () and\
+                   value.dtype == h5py.special_dtype(ref=h5py.Reference):
+                    value = value[()].decode()
                 if annotation_name in POSSIBLE_JSON_FIELDS:
                     value = try_json_field(value)
                 self.global_block_metadata[annotation_name] = value
@@ -289,13 +292,13 @@ class Hdf5WbIO(BaseIO):
         return segment
 
     def _read_epochs_group(self, lazy):
-        if self._file.epochs is not None:
+        if "epochs" in self._file:
             try:
                 # NWB files created by Neo store the segment, block and epoch names as extra
                 # columns
-                segment_names = self._file.epochs.segment[:]
-                block_names = self._file.epochs.block[:]
-                epoch_names = self._file.epochs._name[:]
+                segment_names = self._file["epochs"].segment[:]
+                block_names = self._file["epochs"].block[:]
+                epoch_names = self._file["epochs"]._name[:]
             except AttributeError:
                 epoch_names = None
 
@@ -303,7 +306,7 @@ class Hdf5WbIO(BaseIO):
                 unique_epoch_names = np.unique(epoch_names)
                 for epoch_name in unique_epoch_names:
                     index, = np.where((epoch_names == epoch_name))
-                    epoch = EpochProxy(self._file.epochs, epoch_name, index)
+                    epoch = EpochProxy(self._file["epochs"], epoch_name, index)
                     if not lazy:
                         epoch = epoch.load()
                     segment_name = np.unique(segment_names[index])
@@ -312,7 +315,7 @@ class Hdf5WbIO(BaseIO):
                     segment = self._get_segment(block_name[0], segment_name[0])
                     segment.epochs.append(epoch)
             else:
-                epoch = EpochProxy(self._file.epochs)
+                epoch = EpochProxy(self._file["epochs"])
                 if not lazy:
                     epoch = epoch.load()
                 segment = self._get_segment("default", "default")
@@ -365,15 +368,16 @@ class Hdf5WbIO(BaseIO):
             for id in self._file['units']['id']:
                 try:
                     # NWB files created by Neo store the segment and block names as extra columns
-                    segment_name = self._file.units.segment[id]
-                    block_name = self._file.units.block[id]
-                except AttributeError:
+                    segment_name = self._file['units']['segment'][id]
+                    block_name = self._file['units']['block'][id]
+                except KeyError:
                     # For NWB files created with other applications, we put everything in a single
                     # segment in a single block
                     segment_name = "default"
                     block_name = "default"
                 segment = self._get_segment(block_name, segment_name)
                 spiketrain = SpikeTrainProxy(self._file['units'], id)
+                spiketrain.segment = segment
                 if not lazy:
                     spiketrain = spiketrain.load()
                 segment.spiketrains.append(spiketrain)
