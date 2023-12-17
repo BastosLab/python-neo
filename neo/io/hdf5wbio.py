@@ -854,15 +854,16 @@ class SpikeTrainProxy(BaseSpikeTrainProxy):
         self._units_table = units_table
         self.id = id
         self.units = pq.s
-        obs_intervals = units_table.get_unit_obs_intervals(id)
+        obs_intervals = units_table["obs_intervals"][id] if "obs_intervals"\
+                        in units_table else []
         if len(obs_intervals) == 0:
             t_start, t_stop = None, None
         elif len(obs_intervals) == 1:
             t_start, t_stop = obs_intervals[0]
         else:
             raise NotImplementedError("Can't yet handle multiple observation intervals")
-        self.t_start = t_start * pq.s
-        self.t_stop = t_stop * pq.s
+        self.t_start = t_start * pq.s if t_start else None
+        self.t_stop = t_stop * pq.s if t_stop else None
         self.annotations = {"nwb_group": "acquisition"}
         try:
             # NWB files created by Neo store the name as an extra column
