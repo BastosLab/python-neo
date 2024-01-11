@@ -185,8 +185,18 @@ def _recompose_unit(base_unit_name, conversion):
         return pq.dimensionless
 
 def _regularly_sampled(group):
-    diffs = np.ediff1d(group['timestamps'])
+    diffs = np.ediff1d(group['timestamps'][:])
     return np.all(np.isclose(diffs, diffs[0]))
+
+def _timeseries_leaves(group, leaf_keys):
+    leaves = []
+    def is_leaf(key):
+        timeseries = group[key]
+        if isinstance(timeseries, h5py.Group) and all(k in timeseries for k in leaf_keys):
+            leaves.append(key)
+    group.visit(is_leaf)
+    for leaf in leaves:
+        yield group[leaf]
 
 class Hdf5WbIO(BaseIO):
     """
@@ -323,12 +333,8 @@ class Hdf5WbIO(BaseIO):
 
     def _read_timeseries_group(self, group_name, lazy):
         import pynwb
-
         group = self._file[group_name]
-        for timeseries in group.values():
-            if not isinstance(timeseries, h5py.Group) or\
-               not ('data' in timeseries) or not ('timestamps' in timeseries):
-                continue
+        for timeseries in _timeseries_leaves(group, {'data', 'timestamps'}):
             try:
                 # NWB files created by Neo store the segment and block names in the comments field
                 hierarchy = json.loads(timeseries.comments)
@@ -352,6 +358,7 @@ class Hdf5WbIO(BaseIO):
                 signal = AnalogSignalProxy(timeseries, group_name)
                 if not lazy:
                     signal = signal.load()
+                signal.segment = segment
                 segment.analogsignals.append(signal)
             else:  # IrregularlySampledSignal
                 timestamps = pq.Quantity(timeseries['timestamps'], "sec")
