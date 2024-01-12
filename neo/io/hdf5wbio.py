@@ -198,6 +198,12 @@ def _timeseries_leaves(group, leaf_keys):
     for leaf in leaves:
         yield group[leaf]
 
+def _get_unit_spike_times(units, id, in_interval=None):
+    unit_idx = np.where(units['id'][:] == id)[0].item()
+    spikes_start = units['spike_times_index'][unit_idx]
+    spikes_end = units['spike_times_index'][unit_idx + 1]
+    return units['spike_times'][spikes_start:spikes_end]
+
 class Hdf5WbIO(BaseIO):
     """
     Class for "reading" experimental data from a .nwb file, and "writing" a .nwb file from Neo
@@ -855,6 +861,8 @@ class EpochProxy(BaseEpochProxy):
 
 class SpikeTrainProxy(BaseSpikeTrainProxy):
 
+    _repr_pretty_attrs_keys_ = ("name", "annotations")
+
     def __init__(self, units_table, id):
         """
             :param units_table: A Units table
@@ -877,8 +885,8 @@ class SpikeTrainProxy(BaseSpikeTrainProxy):
         self.annotations = {"nwb_group": "acquisition"}
         try:
             # NWB files created by Neo store the name as an extra column
-            self.name = units_table._name[id]
-        except AttributeError:
+            self.name = units_table['_name'][id]
+        except KeyError:
             self.name = None
         self.shape = None  # no way to get this without reading the data
 
@@ -894,7 +902,7 @@ class SpikeTrainProxy(BaseSpikeTrainProxy):
         interval = None
         if time_slice:
             interval = (float(t) for t in time_slice)  # convert from quantities
-        spike_times = self._units_table.get_unit_spike_times(self.id, in_interval=interval)
+        spike_times = _get_unit_spike_times(self._units_table, self.id, in_interval=interval)
         return SpikeTrain(
             spike_times * self.units,
             self.t_stop,
