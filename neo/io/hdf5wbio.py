@@ -101,7 +101,7 @@ def statistics(block):  # todo: move this to be a property of Block
         stats["SpikeTrain"]["count"] += len(segment.spiketrains)
         stats["AnalogSignal"]["count"] += len(segment.analogsignals)
         stats["IrregularlySampledSignal"]["count"] += len(segment.irregularlysampledsignals)
-        stats["Epoch"]["count"] += len(segment.epochs)
+        stats["Epoch"]["count"] += len(segment.intervals)
         stats["Event"]["count"] += len(segment.events)
     return stats
 
@@ -271,7 +271,7 @@ class Hdf5WbIO(BaseIO):
         self._read_acquisition_group(lazy=lazy)
         self._read_stimulus_group(lazy)
         self._read_units(lazy=lazy)
-        self._read_epochs_group(lazy)
+        self._read_intervals_group(lazy)
 
         return list(self._blocks.values())
 
@@ -301,22 +301,22 @@ class Hdf5WbIO(BaseIO):
             block.segments.append(segment)
         return segment
 
-    def _read_epochs_group(self, lazy):
-        if "epochs" in self._file:
+    def _read_intervals_group(self, lazy):
+        if "intervals" in self._file:
             try:
                 # NWB files created by Neo store the segment, block and epoch names as extra
                 # columns
-                segment_names = self._file["epochs"].segment[:]
-                block_names = self._file["epochs"].block[:]
-                epoch_names = self._file["epochs"]._name[:]
-            except AttributeError:
+                segment_names = self._file["intervals/segment"][:]
+                block_names = self._file["intervals/block"][:]
+                epoch_names = self._file["intervals/_name"][:]
+            except KeyError:
                 epoch_names = None
 
             if epoch_names is not None:
                 unique_epoch_names = np.unique(epoch_names)
                 for epoch_name in unique_epoch_names:
                     index, = np.where((epoch_names == epoch_name))
-                    epoch = EpochProxy(self._file["epochs"], epoch_name, index)
+                    epoch = EpochProxy(self._file["intervals"], epoch_name, index)
                     if not lazy:
                         epoch = epoch.load()
                     segment_name = np.unique(segment_names[index])
@@ -325,10 +325,11 @@ class Hdf5WbIO(BaseIO):
                     segment = self._get_segment(block_name[0], segment_name[0])
                     segment.epochs.append(epoch)
             else:
-                epoch = EpochProxy(self._file["epochs"])
+                epoch = EpochProxy(self._file["intervals"])
                 if not lazy:
                     epoch = epoch.load()
                 segment = self._get_segment("default", "default")
+                epoch.segment = segment
                 segment.epochs.append(epoch)
 
     def _read_timeseries_group(self, group_name, lazy):
@@ -548,7 +549,7 @@ class Hdf5WbIO(BaseIO):
                 event.name = "%s : event%s %d" % (segment.name, event.name, i)
             self._write_event(self._nwbfile, event)
 
-        for i, epoch in enumerate(segment.epochs):
+        for i, epoch in enumerate(segment.intervals):
             if not epoch.name:
                 epoch.name = "%s : epoch%d" % (segment.name, i)
             self._write_epoch(self._nwbfile, epoch)
@@ -664,7 +665,7 @@ class Hdf5WbIO(BaseIO):
                               _name=epoch.name,
                               segment=segment.name,
                               block=segment.block.name)
-        return self._nwbfile.epochs
+        return self._nwbfile.intervals
 
     def close(self):
         if self._file:
@@ -808,9 +809,11 @@ class EventProxy(BaseEventProxy):
 
 class EpochProxy(BaseEpochProxy):
 
+    _repr_pretty_attrs_keys_ = ("name", "shape")
+
     def __init__(self, time_intervals, epoch_name=None, index=None):
         """
-            :param time_intervals: An epochs table,
+            :param time_intervals: An intervals table,
                 which is a specific TimeIntervals table that stores info about long periods
             :param epoch_name: (str)
                 Name of the epoch object
