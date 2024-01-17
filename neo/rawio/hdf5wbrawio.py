@@ -38,7 +38,9 @@ Rules for creating a new class:
 from .baserawio import (BaseRawIO, _signal_channel_dtype, _signal_stream_dtype,
                 _spike_channel_dtype, _event_channel_dtype)
 
+import h5py
 import numpy as np
+import quantities as pq
 
 
 class Hdf5WbRawIO(BaseRawIO):
@@ -61,7 +63,6 @@ class Hdf5WbRawIO(BaseRawIO):
         return self.filename
 
     def _parse_header(self):
-        raise (NotImplementedError)
         # This is the central part of a RawIO
         # we need to collect from the original format all
         # information required for fast access
@@ -69,78 +70,79 @@ class Hdf5WbRawIO(BaseRawIO):
         # In short `_parse_header()` can be slow but
         # `_get_analogsignal_chunk()` needs to be as fast as possible
 
-        # create fake signal streams information
+        try:
+            nwb = h5py.File(self.filename, mode=self.nwb_file_mode)
+        except ValueError:
+            print("Error: Unable to read this version of HDF5/NWB file.")
+            print("Please convert to a later HDF5/NWB format.")
+            raise
+
+        # identify each probe under genera/devices with a signal stream
         signal_streams = []
-        for c in range(2):
-            name = f'stream {c}'
-            stream_id = c
+        probe_attrs = []
+        for stream_id, name in enumerate(nwb['general/devices']):
             signal_streams.append((name, stream_id))
+            lfp_data = nwb['acquisition/probe_%d_lfp/probe_%d_lfp_data' % (stream_id, stream_id)]
+            lfp_times = lfp_data['timestamps']
+            probe_attrs.append({
+                "dtype": lfp_data['data'].dtype,
+                "sr": (1 / (lfp_times[1:] - lfp_times[:-1])).mean().astype(int),
+            })
         signal_streams = np.array(signal_streams, dtype=_signal_stream_dtype)
 
-        # create fake signal channels information
-        # This is mandatory!!!!
         # gain/offset/units are really important because
         # the scaling to real value will be done with that
         # The real signal will be evaluated as `(raw_signal * gain + offset) * pq.Quantity(units)`
         signal_channels = []
-        for c in range(16):
-            ch_name = 'ch{}'.format(c)
-            # our channel id is c+1 just for fun
-            # Note that chan_id should be related to
-            # original channel id in the file format
-            # so that the end user should not be confused when reading datasets
-            chan_id = c + 1
-            sr = 10000.  # Hz
-            dtype = 'int16'
+        # Signal channels for Local Field Potentials
+        electrodes = nwb['general/extracellular_ephys/electrodes']
+        for chan_id in electrodes['id'][:]:
+            ch_name = '{}/ch{}'.format(electrodes['group_name'].decode(), c)
+            # The channel id is just the electrode's global index
+            probe_id = electrodes['probe_id'][chan_id]
+            sr = probe_attrs[probe_id]['sr']
+            dtype = probe_attrs[probe_id]['dtype']
             units = 'uV'
-            gain = 1000. / 2 ** 16
+            gain = 1.
             offset = 0.
-            # stream_id indicates how to group channels
-            # channels inside a "stream" share the same characteristics
-            #  (sampling rate/dtype/t_start/units/...)
-            stream_id = str(c // 8)
-            signal_channels.append((ch_name, chan_id, sr, dtype, units, gain, offset, stream_id))
+            # Group channels according to their probes, which share a dtype, sampling rate, and units
+            signal_channels.append((ch_name, chan_id, sr, dtype, units, gain, offset, probe_id))
         signal_channels = np.array(signal_channels, dtype=_signal_channel_dtype)
 
-        # A stream can contain signals with different physical units.
-        # Here, the two last channels will have different units (pA)
-        # Since AnalogSignals must have consistent units across channels,
-        # this stream will be split in 2 parts on the neo.io level and finally 3 AnalogSignals
-        # will be generated per Segment.
-        signal_channels[-2:]['units'] = 'pA'
-
-        # create fake unit channels
+        # Fetch the timestamps to get the sampling rate for the spike train
+        spike_timestamps = nwb['processing/spike_train/spike_train_data/timestamps']
+        spike_sr = (1 / (spike_timestamps[1:] - spike_timestamps[:-1])).mean().astype(int)
         # This is mandatory!!!!
         # Note that if there is no waveform at all in the file
         # then wf_units/wf_gain/wf_offset/wf_left_sweep/wf_sampling_rate
         # can be set to any value because _spike_raw_waveforms
         # will return None
         spike_channels = []
-        for c in range(3):
-            unit_name = 'unit{}'.format(c)
-            unit_id = '#{}'.format(c)
+        for c, unit in enumerate(nwb['units/id'][:]):
+            unit_name = 'unit{}'.format(unit)
+            unit_id = '#{}'.format(unit)
             wf_units = 'uV'
-            wf_gain = 1000. / 2 ** 16
+            wf_gain = 1.
             wf_offset = 0.
-            wf_left_sweep = 20
-            wf_sampling_rate = 10000.
+            wf_left_sweep = 0.
+            wf_sampling_rate = spike_sr
             spike_channels.append((unit_name, unit_id, wf_units, wf_gain,
-                                  wf_offset, wf_left_sweep, wf_sampling_rate))
+                                   wf_offset, wf_left_sweep, wf_sampling_rate))
         spike_channels = np.array(spike_channels, dtype=_spike_channel_dtype)
 
-        # creating event/epoch channel
+        # creating event/epoch channels out of all intervals
         # This is mandatory!!!!
         # In RawIO epoch and event are dealt with in the same way.
         event_channels = []
-        event_channels.append(('Some events', 'ev_0', 'event'))
-        event_channels.append(('Some epochs', 'ep_1', 'epoch'))
+        for i, intervals in enumerate(nwb['intervals'].keys()):
+            event_channels.append((intervals, 'ep_%d' % i, 'epoch'))
         event_channels = np.array(event_channels, dtype=_event_channel_dtype)
 
         # fill information into the header dict
         # This is mandatory!!!!!
         self.header = {}
-        self.header['nb_block'] = 2
-        self.header['nb_segment'] = [2, 3]
+        self.header['nb_block'] = 1
+        self.header['nb_segment'] = [1]
         self.header['signal_streams'] = signal_streams
         self.header['signal_channels'] = signal_channels
         self.header['spike_channels'] = spike_channels
@@ -161,39 +163,17 @@ class Hdf5WbRawIO(BaseRawIO):
         # Until here all mandatory operations for setting up a rawio are implemented.
         # The following lines provide additional, recommended annotations for the
         # final neo objects.
-        for block_index in range(2):
-            bl_ann = self.raw_annotations['blocks'][block_index]
-            bl_ann['name'] = 'Block #{}'.format(block_index)
-            bl_ann['block_extra_info'] = 'This is the block {}'.format(block_index)
-            for seg_index in range([2, 3][block_index]):
-                seg_ann = bl_ann['segments'][seg_index]
-                seg_ann['name'] = 'Seg #{} Block #{}'.format(
-                    seg_index, block_index)
-                seg_ann['seg_extra_info'] = 'This is the seg {} of block {}'.format(
-                    seg_index, block_index)
-                for c in range(2):
-                    sig_an = seg_ann['signals'][c]['nickname'] = \
-                        f'This stream {c} is from a subdevice'
-                    # add some array annotations (8 channels)
-                    sig_an = seg_ann['signals'][c]['__array_annotations__']['impedance'] = \
-                        np.random.rand(8) * 10000
-                for c in range(3):
-                    spiketrain_an = seg_ann['spikes'][c]
-                    spiketrain_an['quality'] = 'Good!!'
-                    # add some array annotations
-                    num_spikes = self.spike_count(block_index, seg_index, c)
-                    spiketrain_an['__array_annotations__']['amplitudes'] = \
-                        np.random.randn(num_spikes)
+        bl_ann = self.raw_annotations['blocks'][0]
+        bl_ann['name'] = 'Block #{}'.format(block_index)
+        bl_ann['block_extra_info'] = 'This is the block {}'.format(block_index)
+        for seg_index in range(self.header['nb_segment'][block_index]):
+            seg_ann = bl_ann['segments'][seg_index]
+            seg_ann['name'] = 'Seg #{} Block #{}'.format(seg_index, block_index)
+            seg_ann['seg_extra_info'] = 'This is the seg {} of block {}'.format(
+                seg_index, block_index
+            )
 
-                for c in range(2):
-                    event_an = seg_ann['events'][c]
-                    if c == 0:
-                        event_an['nickname'] = 'Miss Event 0'
-                        # add some array annotations
-                        num_ev = self.event_count(block_index, seg_index, c)
-                        event_an['__array_annotations__']['button'] = ['A'] * num_ev
-                    elif c == 1:
-                        event_an['nickname'] = 'MrEpoch 1'
+        nwb.close()
 
     def _segment_t_start(self, block_index, seg_index):
         raise (NotImplementedError)
