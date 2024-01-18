@@ -87,8 +87,13 @@ class Hdf5WbRawIO(BaseRawIO):
             probe_attrs.append({
                 "dtype": lfp_data['data'].dtype,
                 "sr": (1 / (lfp_times[1:] - lfp_times[:-1])).mean().astype(int),
+                "t_start": lfp_times[0], "t_stop": lfp_times[-1],
+                "size": len(lfp_times)
             })
         signal_streams = np.array(signal_streams, dtype=_signal_stream_dtype)
+        self._t_starts = [[np.round(probe_attrs[0]["t_start"], 3)]]
+        self._t_stops = [[np.round(probe_attrs[0]["t_stop"], 3)]]
+        self._signal_attrs = [[probe_attrs]]
 
         # gain/offset/units are really important because
         # the scaling to real value will be done with that
@@ -176,33 +181,25 @@ class Hdf5WbRawIO(BaseRawIO):
         nwb.close()
 
     def _segment_t_start(self, block_index, seg_index):
-        raise (NotImplementedError)
         # this must return a float scaled in seconds
         # this t_start will be shared by all objects in the segment
         # except AnalogSignal
-        all_starts = [[0., 15.], [0., 20., 60.]]
-        return all_starts[block_index][seg_index]
+        return self._t_starts[block_index][seg_index]
 
     def _segment_t_stop(self, block_index, seg_index):
-        raise (NotImplementedError)
         # this must return a float scaled in seconds
-        all_stops = [[10., 25.], [10., 30., 70.]]
-        return all_stops[block_index][seg_index]
+        return self._t_stops[block_index][seg_index]
 
     def _get_signal_size(self, block_index, seg_index, stream_index):
-        raise (NotImplementedError)
-        # We generate fake data in which the two stream signals have the same shape
-        # across all segments (10.0 seconds)
-        # This is not the case for real data, instead you should return the signal
-        # size depending on the block_index and segment_index
-        # this must return an int = the number of samples
+
+        # You should return the signal size depending on the block_index and
+        # segment_index. This must return an int = the number of samples
 
         # Note that channel_indexes can be ignored for most cases
         # except for the case of several sampling rates.
-        return 100000
+        return self._signal_attrs[block_index][seg_index][stream_index]["size"]
 
     def _get_signal_t_start(self, block_index, seg_index, stream_index):
-        raise (NotImplementedError)
         # This give the t_start of a signal.
         # Very often this is equal to _segment_t_start but not
         # always.
